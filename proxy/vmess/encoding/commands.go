@@ -1,6 +1,7 @@
 package encoding
 
 import (
+	"encoding/binary"
 	"io"
 
 	"v2ray.com/core/common"
@@ -56,7 +57,7 @@ func UnmarshalCommand(cmdID byte, data []byte) (protocol.ResponseCommand, error)
 		return nil, newError("insufficient length")
 	}
 	expectedAuth := Authenticate(data[4:])
-	actualAuth := serial.BytesToUint32(data[:4])
+	actualAuth := binary.BigEndian.Uint32(data[:4])
 	if expectedAuth != actualAuth {
 		return nil, newError("invalid auth")
 	}
@@ -95,12 +96,11 @@ func (f *CommandSwitchAccountFactory) Marshal(command interface{}, writer io.Wri
 		common.Must2(writer.Write([]byte(hostStr)))
 	}
 
-	common.Must2(writer.Write(cmd.Port.Bytes(nil)))
+	common.Must2(serial.WriteUint16(writer, cmd.Port.Value()))
 
 	idBytes := cmd.ID.Bytes()
 	common.Must2(writer.Write(idBytes))
-
-	common.Must2(writer.Write(serial.Uint16ToBytes(cmd.AlterIds, nil)))
+	common.Must2(serial.WriteUint16(writer, cmd.AlterIds))
 	common.Must2(writer.Write([]byte{byte(cmd.Level)}))
 
 	common.Must2(writer.Write([]byte{cmd.ValidMin}))
@@ -133,7 +133,7 @@ func (f *CommandSwitchAccountFactory) Unmarshal(data []byte) (interface{}, error
 	if len(data) < alterIDStart+2 {
 		return nil, newError("insufficient length.")
 	}
-	cmd.AlterIds = serial.BytesToUint16(data[alterIDStart : alterIDStart+2])
+	cmd.AlterIds = binary.BigEndian.Uint16(data[alterIDStart : alterIDStart+2])
 	levelStart := alterIDStart + 2
 	if len(data) < levelStart+1 {
 		return nil, newError("insufficient length.")

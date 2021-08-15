@@ -19,9 +19,8 @@ import (
 
 // MemoryAccount is an account type converted from Account.
 type MemoryAccount struct {
-	Cipher      Cipher
-	Key         []byte
-	OneTimeAuth Account_OneTimeAuth
+	Cipher Cipher
+	Key    []byte
 }
 
 // Equals implements protocol.Account.Equals().
@@ -88,9 +87,8 @@ func (a *Account) AsAccount() (protocol.Account, error) {
 		return nil, newError("failed to get cipher").Base(err)
 	}
 	return &MemoryAccount{
-		Cipher:      cipher,
-		Key:         passwordToCipherKey([]byte(a.Password), cipher.KeySize()),
-		OneTimeAuth: a.Ota,
+		Cipher: cipher,
+		Key:    passwordToCipherKey([]byte(a.Password), cipher.KeySize()),
 	}, nil
 }
 
@@ -198,13 +196,10 @@ func (c *AEADCipher) EncodePacket(key []byte, b *buf.Buffer) error {
 	ivLen := c.IVSize()
 	payloadLen := b.Len()
 	auth := c.createAuthenticator(key, b.BytesTo(ivLen))
-	return b.Reset(func(bb []byte) (int, error) {
-		bbb, err := auth.Seal(bb[:ivLen], bb[ivLen:payloadLen])
-		if err != nil {
-			return 0, err
-		}
-		return len(bbb), nil
-	})
+
+	b.Extend(int32(auth.Overhead()))
+	_, err := auth.Seal(b.BytesTo(ivLen), b.BytesRange(ivLen, payloadLen))
+	return err
 }
 
 func (c *AEADCipher) DecodePacket(key []byte, b *buf.Buffer) error {
@@ -214,16 +209,12 @@ func (c *AEADCipher) DecodePacket(key []byte, b *buf.Buffer) error {
 	ivLen := c.IVSize()
 	payloadLen := b.Len()
 	auth := c.createAuthenticator(key, b.BytesTo(ivLen))
-	if err := b.Reset(func(bb []byte) (int, error) {
-		bbb, err := auth.Open(bb[:ivLen], bb[ivLen:payloadLen])
-		if err != nil {
-			return 0, err
-		}
-		return len(bbb), nil
-	}); err != nil {
+
+	bbb, err := auth.Open(b.BytesTo(ivLen), b.BytesRange(ivLen, payloadLen))
+	if err != nil {
 		return err
 	}
-	b.Advance(ivLen)
+	b.Resize(ivLen, int32(len(bbb)))
 	return nil
 }
 

@@ -1,6 +1,8 @@
+// +build !confonly
+
 package outbound
 
-//go:generate errorgen
+//go:generate go run v2ray.com/core/common/errors/errorgen
 
 import (
 	"context"
@@ -16,45 +18,48 @@ import (
 	"v2ray.com/core/common/session"
 	"v2ray.com/core/common/signal"
 	"v2ray.com/core/common/task"
-	"v2ray.com/core/proxy"
+	"v2ray.com/core/features/policy"
 	"v2ray.com/core/proxy/vmess"
 	"v2ray.com/core/proxy/vmess/encoding"
+	"v2ray.com/core/transport"
 	"v2ray.com/core/transport/internet"
 )
 
 // Handler is an outbound connection handler for VMess protocol.
 type Handler struct {
-	serverList   *protocol.ServerList
-	serverPicker protocol.ServerPicker
-	v            *core.Instance
+	serverList    *protocol.ServerList
+	serverPicker  protocol.ServerPicker
+	policyManager policy.Manager
 }
 
 // New creates a new VMess outbound handler.
 func New(ctx context.Context, config *Config) (*Handler, error) {
 	serverList := protocol.NewServerList()
 	for _, rec := range config.Receiver {
-		s, err := protocol.NewServerSpecFromPB(*rec)
+		s, err := protocol.NewServerSpecFromPB(rec)
 		if err != nil {
 			return nil, newError("failed to parse server spec").Base(err)
 		}
 		serverList.AddServer(s)
 	}
+
+	v := core.MustFromContext(ctx)
 	handler := &Handler{
-		serverList:   serverList,
-		serverPicker: protocol.NewRoundRobinServerPicker(serverList),
-		v:            core.MustFromContext(ctx),
+		serverList:    serverList,
+		serverPicker:  protocol.NewRoundRobinServerPicker(serverList),
+		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 	}
 
 	return handler, nil
 }
 
 // Process implements proxy.Outbound.Process().
-func (v *Handler) Process(ctx context.Context, link *core.Link, dialer proxy.Dialer) error {
+func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
 	var rec *protocol.ServerSpec
 	var conn internet.Connection
 
 	err := retry.ExponentialBackoff(5, 200).On(func() error {
-		rec = v.serverPicker.PickServer()
+		rec = h.serverPicker.PickServer()
 		rawConn, err := dialer.Dial(ctx, rec.Destination())
 		if err != nil {
 			return err
@@ -84,31 +89,37 @@ func (v *Handler) Process(ctx context.Context, link *core.Link, dialer proxy.Dia
 		command = protocol.RequestCommandMux
 	}
 
+	user := rec.PickUser()
 	request := &protocol.RequestHeader{
 		Version: encoding.Version,
-		User:    rec.PickUser(),
+		User:    user,
 		Command: command,
 		Address: target.Address,
 		Port:    target.Port,
 		Option:  protocol.RequestOptionChunkStream,
 	}
 
-	account := request.User.Account.(*vmess.InternalAccount)
+	account := request.User.Account.(*vmess.MemoryAccount)
 	request.Security = account.Security
 
 	if request.Security == protocol.SecurityType_AES128_GCM || request.Security == protocol.SecurityType_NONE || request.Security == protocol.SecurityType_CHACHA20_POLY1305 {
 		request.Option.Set(protocol.RequestOptionChunkMasking)
 	}
 
-	if enablePadding && request.Option.Has(protocol.RequestOptionChunkMasking) {
+	if shouldEnablePadding(request.Security) && request.Option.Has(protocol.RequestOptionChunkMasking) {
 		request.Option.Set(protocol.RequestOptionGlobalPadding)
 	}
 
 	input := link.Reader
 	output := link.Writer
 
-	session := encoding.NewClientSession(protocol.DefaultIDHash)
-	sessionPolicy := v.v.PolicyManager().ForLevel(request.User.Level)
+	isAEAD := false
+	if !aead_disabled && len(account.AlterIDs) == 0 {
+		isAEAD = true
+	}
+
+	session := encoding.NewClientSession(isAEAD, protocol.DefaultIDHash, ctx)
+	sessionPolicy := h.policyManager.ForLevel(request.User.Level)
 
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
@@ -151,15 +162,15 @@ func (v *Handler) Process(ctx context.Context, link *core.Link, dialer proxy.Dia
 		if err != nil {
 			return newError("failed to read header").Base(err)
 		}
-		v.handleCommand(rec.Destination(), header.Command)
+		h.handleCommand(rec.Destination(), header.Command)
 
 		bodyReader := session.DecodeResponseBody(request, reader)
 
 		return buf.Copy(bodyReader, output, buf.UpdateActivity(timer))
 	}
 
-	var responseDonePost = task.Single(responseDone, task.OnSuccess(task.Close(output)))
-	if err := task.Run(task.WithContext(ctx), task.Parallel(requestDone, responseDonePost))(); err != nil {
+	var responseDonePost = task.OnSuccess(responseDone, task.Close(output))
+	if err := task.Run(ctx, requestDone, responseDonePost); err != nil {
 		return newError("connection ends").Base(err)
 	}
 
@@ -168,7 +179,12 @@ func (v *Handler) Process(ctx context.Context, link *core.Link, dialer proxy.Dia
 
 var (
 	enablePadding = false
+	aead_disabled = false
 )
+
+func shouldEnablePadding(s protocol.SecurityType) bool {
+	return enablePadding || s == protocol.SecurityType_AES128_GCM || s == protocol.SecurityType_CHACHA20_POLY1305 || s == protocol.SecurityType_AUTO
+}
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
@@ -176,8 +192,14 @@ func init() {
 	}))
 
 	const defaultFlagValue = "NOT_DEFINED_AT_ALL"
+
 	paddingValue := platform.NewEnvFlag("v2ray.vmess.padding").GetValue(func() string { return defaultFlagValue })
 	if paddingValue != defaultFlagValue {
 		enablePadding = true
+	}
+
+	aeadDisabled := platform.NewEnvFlag("v2ray.vmess.aead.disabled").GetValue(func() string { return defaultFlagValue })
+	if aeadDisabled == "true" {
+		aead_disabled = true
 	}
 }

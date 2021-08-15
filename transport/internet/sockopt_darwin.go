@@ -2,13 +2,14 @@ package internet
 
 import (
 	"syscall"
-
-	"v2ray.com/core/common/net"
 )
 
 const (
-	TCP_FASTOPEN        = 0x105
+	// TCP_FASTOPEN is the socket option on darwin for TCP fast open.
+	TCP_FASTOPEN = 0x105
+	// TCP_FASTOPEN_SERVER is the value to enable TCP fast open on darwin for server connections.
 	TCP_FASTOPEN_SERVER = 0x01
+	// TCP_FASTOPEN_CLIENT is the value to enable TCP fast open on darwin for client connections.
 	TCP_FASTOPEN_CLIENT = 0x02
 )
 
@@ -46,6 +47,14 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 	return nil
 }
 
-func bindAddr(fd uintptr, address net.Address, port net.Port) error {
+func bindAddr(fd uintptr, address []byte, port uint32) error {
+	return nil
+}
+
+func setReuseAddr(fd uintptr) error {
+	return nil
+}
+
+func setReusePort(fd uintptr) error {
 	return nil
 }

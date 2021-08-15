@@ -1,12 +1,10 @@
 ---
 name: Bug report
 about: "Create a bug report to help us improve"
-
 ---
 
-Please read the [instruction](https://github.com/v2ray/v2ray-core/blob/master/.github/SUPPORT.md) and answer the following questions before submitting your issue. Thank you.
 Please answer all the questions with enough information. All issues not following this template will be closed immediately.
-If you are not sure if your question is truely a bug in V2Ray, please discuss it [here](https://github.com/v2ray/discussion/issues) first.
+If you are not sure if your question is truely a bug in V2Ray, please discuss it [here](https://github.com/v2fly/discussion/issues) first.
 
 1) What version of V2Ray are you using (If you deploy different version on server and client, please explicitly point out)?
 
@@ -50,8 +48,6 @@ Client error log:
     // Please attach your server access log here.
 ```
 
-Please review your issue before submitting.
-
 8) Other configurations (such as Nginx) and logs.
 
 9) If V2Ray doesn't run, please attach output from `--test`.
@@ -61,3 +57,5 @@ The command is usually `/usr/bin/v2ray/v2ray --test --config /etc/v2ray/config.j
 10) If V2Ray service doesn't run, please attach journal log.
 
 Usual command is `journalctl -u v2ray`.
+
+Please review your issue before submitting.

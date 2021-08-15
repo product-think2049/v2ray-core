@@ -1,36 +1,37 @@
+# Move To https://github.com/v2fly/v2ray-core
+
+***
+
 # Project V
 
-[![Build Status][1]][2] [![AppVeyor][3]][4] [![Run Status][5]][6] [![codecov.io][7]][8] [![Go Report][9]][10] [![GoDoc][11]][12] [![codebeat][13]][14] [![Downloads][15]][16]
+[![GitHub Test Badge][1]][2] [![codecov.io][3]][4] [![GoDoc][5]][6] [![codebeat][7]][8] [![Downloads][9]][10] [![Downloads][11]][12]
 
-[1]: https://travis-ci.org/v2ray/v2ray-core.svg?branch=master "Build Status badge"
-[2]: https://travis-ci.org/v2ray/v2ray-core "Travis-CI Build Status"
-[3]: https://ci.appveyor.com/api/projects/status/bx8o4tvbvhe6p5k5?svg=true "App Veyor Build Status"
-[4]: https://ci.appveyor.com/project/DarienRaymond/v2ray-core "App Veyor Link"
-[5]: https://api.shippable.com/projects/5b680bc42b26aa08007371fc/badge?branch=master "Shippable Build Status"
-[6]: https://app.shippable.com/github/v2ray/v2ray-core "Shippable Link"
-[7]: https://codecov.io/github/v2ray/v2ray-core/coverage.svg?branch=master "Coverage badge"
-[8]: https://codecov.io/github/v2ray/v2ray-core?branch=master "Codecov Status"
-[9]: https://goreportcard.com/badge/v2ray.com/core "Go Report badge"
-[10]: https://goreportcard.com/report/v2ray.com/core "Go Report"
-[11]: https://godoc.org/v2ray.com/core?status.svg "GoDoc badge"
-[12]: https://godoc.org/v2ray.com/core "GoDoc"
-[13]: https://codebeat.co/badges/f2354ca8-3e24-463d-a2e3-159af73b2477 "Codebeat badge"
-[14]: https://codebeat.co/projects/github-com-v2ray-v2ray-core-master "Codebeat"
-[15]: https://img.shields.io/github/downloads/v2ray/v2ray-core/total.svg "All releases badge"
-[16]: https://github.com/v2ray/v2ray-core/releases/ "All releases number"
+[1]: https://github.com/v2fly/v2ray-core/workflows/Test/badge.svg "GitHub Test Badge"
+[2]: https://github.com/v2fly/v2ray-core/actions "GitHub Actions Page"
+[3]: https://codecov.io/gh/v2fly/v2ray-core/branch/master/graph/badge.svg?branch=master "Coverage Badge"
+[4]: https://codecov.io/gh/v2fly/v2ray-core?branch=master "Codecov Status"
+[5]: https://godoc.org/v2ray.com/core?status.svg "GoDoc Badge"
+[6]: https://godoc.org/v2ray.com/core "GoDoc"
+[7]: https://goreportcard.com/badge/github.com/v2fly/v2ray-core "Goreportcard Badge"
+[8]: https://goreportcard.com/report/github.com/v2fly/v2ray-core "Goreportcard Result"
+[9]: https://img.shields.io/github/downloads/v2ray/v2ray-core/total.svg "v2ray/v2ray-core downloads count"
+[10]: https://github.com/v2ray/v2ray-core/releases "v2ray/v2ray-core release page"
+[11]: https://img.shields.io/github/downloads/v2fly/v2ray-core/total.svg "v2fly/v2ray-core downloads count"
+[12]: https://github.com/v2fly/v2ray-core/releases "v2fly/v2ray-core release page"
 
-Project V is a set of network tools that help you to build your own computer network. It secures your network connections and thus protects your privacy. See [our website](https://www.v2ray.com/) for more information.
+Project V is a set of network tools that help you to build your own computer network. It secures your network connections and thus protects your privacy. See [our website](https://www.v2fly.org/) for more information.
 
 ## License
 
-[The MIT License (MIT)](https://raw.githubusercontent.com/v2ray/v2ray-core/master/LICENSE)
+[The MIT License (MIT)](https://raw.githubusercontent.com/v2fly/v2ray-core/master/LICENSE)
 
 ## Credits
 
 This repo relies on the following third-party projects:
 
-* In production:
-  * [miekg/dns](https://github.com/miekg/dns)
-  * [gorilla/websocket](https://github.com/gorilla/websocket)
-* For testing only:
-  * [h12w/socks](https://github.com/h12w/socks)
+- In production:
+  - [gorilla/websocket](https://github.com/gorilla/websocket)
+  - [gRPC](https://google.golang.org/grpc)
+- For testing only:
+  - [miekg/dns](https://github.com/miekg/dns)
+  - [h12w/socks](https://github.com/h12w/socks)

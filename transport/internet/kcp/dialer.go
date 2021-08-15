@@ -1,8 +1,9 @@
+// +build !confonly
+
 package kcp
 
 import (
 	"context"
-	"crypto/tls"
 	"io"
 	"sync/atomic"
 
@@ -11,7 +12,8 @@ import (
 	"v2ray.com/core/common/dice"
 	"v2ray.com/core/common/net"
 	"v2ray.com/core/transport/internet"
-	v2tls "v2ray.com/core/transport/internet/tls"
+	"v2ray.com/core/transport/internet/tls"
+	"v2ray.com/core/transport/internet/xtls"
 )
 
 var (
@@ -23,7 +25,7 @@ func fetchInput(ctx context.Context, input io.Reader, reader PacketReader, conn 
 	go func() {
 		for {
 			payload := buf.New()
-			if err := payload.Reset(buf.ReadFrom(input)); err != nil {
+			if _, err := payload.ReadFrom(input); err != nil {
 				payload.Release()
 				close(cache)
 				return
@@ -45,16 +47,17 @@ func fetchInput(ctx context.Context, input io.Reader, reader PacketReader, conn 
 	}
 }
 
-func DialKCP(ctx context.Context, dest net.Destination) (internet.Connection, error) {
+// DialKCP dials a new KCP connections to the specific destination.
+func DialKCP(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (internet.Connection, error) {
 	dest.Network = net.Network_UDP
 	newError("dialing mKCP to ", dest).WriteToLog()
 
-	rawConn, err := internet.DialSystem(ctx, dest)
+	rawConn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
 	if err != nil {
 		return nil, newError("failed to dial to dest: ", err).AtWarning().Base(err)
 	}
 
-	kcpSettings := internet.StreamSettingsFromContext(ctx).ProtocolSettings.(*Config)
+	kcpSettings := streamSettings.ProtocolSettings.(*Config)
 
 	header, err := kcpSettings.GetPackerHeader()
 	if err != nil {
@@ -85,9 +88,10 @@ func DialKCP(ctx context.Context, dest net.Destination) (internet.Connection, er
 
 	var iConn internet.Connection = session
 
-	if config := v2tls.ConfigFromContext(ctx); config != nil {
-		tlsConn := tls.Client(iConn, config.GetTLSConfig(v2tls.WithDestination(dest)))
-		iConn = tlsConn
+	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
+		iConn = tls.Client(iConn, config.GetTLSConfig(tls.WithDestination(dest)))
+	} else if config := xtls.ConfigFromStreamSettings(streamSettings); config != nil {
+		iConn = xtls.Client(iConn, config.GetXTLSConfig(xtls.WithDestination(dest)))
 	}
 
 	return iConn, nil

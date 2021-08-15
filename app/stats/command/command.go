@@ -1,9 +1,13 @@
+// +build !confonly
+
 package command
 
-//go:generate errorgen
+//go:generate go run v2ray.com/core/common/errors/errorgen
 
 import (
 	"context"
+	"runtime"
+	"time"
 
 	grpc "google.golang.org/grpc"
 
@@ -11,15 +15,20 @@ import (
 	"v2ray.com/core/app/stats"
 	"v2ray.com/core/common"
 	"v2ray.com/core/common/strmatcher"
+	feature_stats "v2ray.com/core/features/stats"
 )
 
 // statsServer is an implementation of StatsService.
 type statsServer struct {
-	stats core.StatManager
+	stats     feature_stats.Manager
+	startTime time.Time
 }
 
-func NewStatsServer(manager core.StatManager) StatsServiceServer {
-	return &statsServer{stats: manager}
+func NewStatsServer(manager feature_stats.Manager) StatsServiceServer {
+	return &statsServer{
+		stats:     manager,
+		startTime: time.Now(),
+	}
 }
 
 func (s *statsServer) GetStats(ctx context.Context, request *GetStatsRequest) (*GetStatsResponse, error) {
@@ -54,7 +63,7 @@ func (s *statsServer) QueryStats(ctx context.Context, request *QueryStatsRequest
 		return nil, newError("QueryStats only works its own stats.Manager.")
 	}
 
-	manager.Visit(func(name string, c core.StatCounter) bool {
+	manager.VisitCounters(func(name string, c feature_stats.Counter) bool {
 		if matcher.Match(name) {
 			var value int64
 			if request.Reset_ {
@@ -73,17 +82,46 @@ func (s *statsServer) QueryStats(ctx context.Context, request *QueryStatsRequest
 	return response, nil
 }
 
+func (s *statsServer) GetSysStats(ctx context.Context, request *SysStatsRequest) (*SysStatsResponse, error) {
+	var rtm runtime.MemStats
+	runtime.ReadMemStats(&rtm)
+
+	uptime := time.Since(s.startTime)
+
+	response := &SysStatsResponse{
+		Uptime:       uint32(uptime.Seconds()),
+		NumGoroutine: uint32(runtime.NumGoroutine()),
+		Alloc:        rtm.Alloc,
+		TotalAlloc:   rtm.TotalAlloc,
+		Sys:          rtm.Sys,
+		Mallocs:      rtm.Mallocs,
+		Frees:        rtm.Frees,
+		LiveObjects:  rtm.Mallocs - rtm.Frees,
+		NumGC:        rtm.NumGC,
+		PauseTotalNs: rtm.PauseTotalNs,
+	}
+
+	return response, nil
+}
+
+func (s *statsServer) mustEmbedUnimplementedStatsServiceServer() {}
+
 type service struct {
-	v *core.Instance
+	statsManager feature_stats.Manager
 }
 
 func (s *service) Register(server *grpc.Server) {
-	RegisterStatsServiceServer(server, NewStatsServer(s.v.Stats()))
+	RegisterStatsServiceServer(server, NewStatsServer(s.statsManager))
 }
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, cfg interface{}) (interface{}, error) {
-		s := core.MustFromContext(ctx)
-		return &service{v: s}, nil
+		s := new(service)
+
+		core.RequireFeatures(ctx, func(sm feature_stats.Manager) {
+			s.statsManager = sm
+		})
+
+		return s, nil
 	}))
 }

@@ -24,14 +24,8 @@ func TestSockOptMark(t *testing.T) {
 	defer tcpServer.Close()
 
 	const mark = 1
-	ctx := context.Background()
-	ctx = ContextWithStreamSettings(ctx, &MemoryStreamConfig{
-		SocketSettings: &SocketConfig{
-			Mark: mark,
-		},
-	})
 	dialer := DefaultSystemDialer{}
-	conn, err := dialer.Dial(ctx, nil, dest)
+	conn, err := dialer.Dial(context.Background(), nil, dest, &SocketConfig{Mark: mark})
 	common.Must(err)
 	defer conn.Close()
 
@@ -41,7 +35,7 @@ func TestSockOptMark(t *testing.T) {
 		m, err := syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK)
 		common.Must(err)
 		if mark != m {
-			t.Fatal("unexpected conneciton mark", m, " want ", mark)
+			t.Fatal("unexpected connection mark", m, " want ", mark)
 		}
 	})
 	common.Must(err)

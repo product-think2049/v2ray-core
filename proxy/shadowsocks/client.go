@@ -1,10 +1,9 @@
+// +build !confonly
+
 package shadowsocks
 
 import (
 	"context"
-
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/task"
 
 	"v2ray.com/core"
 	"v2ray.com/core/common"
@@ -12,22 +11,25 @@ import (
 	"v2ray.com/core/common/net"
 	"v2ray.com/core/common/protocol"
 	"v2ray.com/core/common/retry"
+	"v2ray.com/core/common/session"
 	"v2ray.com/core/common/signal"
-	"v2ray.com/core/proxy"
+	"v2ray.com/core/common/task"
+	"v2ray.com/core/features/policy"
+	"v2ray.com/core/transport"
 	"v2ray.com/core/transport/internet"
 )
 
 // Client is a inbound handler for Shadowsocks protocol
 type Client struct {
-	serverPicker protocol.ServerPicker
-	v            *core.Instance
+	serverPicker  protocol.ServerPicker
+	policyManager policy.Manager
 }
 
 // NewClient create a new Shadowsocks client.
 func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 	serverList := protocol.NewServerList()
 	for _, rec := range config.Server {
-		s, err := protocol.NewServerSpecFromPB(*rec)
+		s, err := protocol.NewServerSpecFromPB(rec)
 		if err != nil {
 			return nil, newError("failed to parse server spec").Base(err)
 		}
@@ -36,15 +38,17 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 	if serverList.Size() == 0 {
 		return nil, newError("0 server")
 	}
+
+	v := core.MustFromContext(ctx)
 	client := &Client{
-		serverPicker: protocol.NewRoundRobinServerPicker(serverList),
-		v:            core.MustFromContext(ctx),
+		serverPicker:  protocol.NewRoundRobinServerPicker(serverList),
+		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 	}
 	return client, nil
 }
 
 // Process implements OutboundHandler.Process().
-func (c *Client) Process(ctx context.Context, link *core.Link, dialer proxy.Dialer) error {
+func (c *Client) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
 	outbound := session.OutboundFromContext(ctx)
 	if outbound == nil || !outbound.Target.IsValid() {
 		return newError("target not specified")
@@ -86,17 +90,13 @@ func (c *Client) Process(ctx context.Context, link *core.Link, dialer proxy.Dial
 	}
 
 	user := server.PickUser()
-	account, ok := user.Account.(*MemoryAccount)
+	_, ok := user.Account.(*MemoryAccount)
 	if !ok {
 		return newError("user account is not valid")
 	}
 	request.User = user
 
-	if account.OneTimeAuth == Account_Auto || account.OneTimeAuth == Account_Enabled {
-		request.Option |= RequestOptionOneTimeAuth
-	}
-
-	sessionPolicy := c.v.PolicyManager().ForLevel(user.Level)
+	sessionPolicy := c.policyManager.ForLevel(user.Level)
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
 
@@ -127,8 +127,8 @@ func (c *Client) Process(ctx context.Context, link *core.Link, dialer proxy.Dial
 			return buf.Copy(responseReader, link.Writer, buf.UpdateActivity(timer))
 		}
 
-		var responseDoneAndCloseWriter = task.Single(responseDone, task.OnSuccess(task.Close(link.Writer)))
-		if err := task.Run(task.WithContext(ctx), task.Parallel(requestDone, responseDoneAndCloseWriter))(); err != nil {
+		var responseDoneAndCloseWriter = task.OnSuccess(responseDone, task.Close(link.Writer))
+		if err := task.Run(ctx, requestDone, responseDoneAndCloseWriter); err != nil {
 			return newError("connection ends").Base(err)
 		}
 
@@ -165,8 +165,8 @@ func (c *Client) Process(ctx context.Context, link *core.Link, dialer proxy.Dial
 			return nil
 		}
 
-		var responseDoneAndCloseWriter = task.Single(responseDone, task.OnSuccess(task.Close(link.Writer)))
-		if err := task.Run(task.WithContext(ctx), task.Parallel(requestDone, responseDoneAndCloseWriter))(); err != nil {
+		var responseDoneAndCloseWriter = task.OnSuccess(responseDone, task.Close(link.Writer))
+		if err := task.Run(ctx, requestDone, responseDoneAndCloseWriter); err != nil {
 			return newError("connection ends").Base(err)
 		}
 

@@ -3,13 +3,13 @@ package shadowsocks_test
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"v2ray.com/core/common"
 	"v2ray.com/core/common/buf"
 	"v2ray.com/core/common/net"
 	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/serial"
 	. "v2ray.com/core/proxy/shadowsocks"
-	. "v2ray.com/ext/assert"
 )
 
 func toAccount(a *Account) protocol.Account {
@@ -19,8 +19,6 @@ func toAccount(a *Account) protocol.Account {
 }
 
 func TestUDPEncoding(t *testing.T) {
-	assert := With(t)
-
 	request := &protocol.RequestHeader{
 		Version: Version,
 		Command: protocol.RequestCommandUDP,
@@ -31,27 +29,28 @@ func TestUDPEncoding(t *testing.T) {
 			Account: toAccount(&Account{
 				Password:   "shadowsocks-password",
 				CipherType: CipherType_AES_128_CFB,
-				Ota:        Account_Disabled,
 			}),
 		},
 	}
 
 	data := buf.New()
-	data.AppendSupplier(serial.WriteString("test string"))
+	common.Must2(data.WriteString("test string"))
 	encodedData, err := EncodeUDPPacket(request, data.Bytes())
-	assert(err, IsNil)
+	common.Must(err)
 
 	decodedRequest, decodedData, err := DecodeUDPPacket(request.User, encodedData)
-	assert(err, IsNil)
-	assert(decodedData.Bytes(), Equals, data.Bytes())
-	assert(decodedRequest.Address, Equals, request.Address)
-	assert(decodedRequest.Port, Equals, request.Port)
-	assert(decodedRequest.Command, Equals, request.Command)
+	common.Must(err)
+
+	if r := cmp.Diff(decodedData.Bytes(), data.Bytes()); r != "" {
+		t.Error("data: ", r)
+	}
+
+	if r := cmp.Diff(decodedRequest, request); r != "" {
+		t.Error("request: ", r)
+	}
 }
 
 func TestTCPRequest(t *testing.T) {
-	assert := With(t)
-
 	cases := []struct {
 		request *protocol.RequestHeader
 		payload []byte
@@ -61,7 +60,6 @@ func TestTCPRequest(t *testing.T) {
 				Version: Version,
 				Command: protocol.RequestCommandTCP,
 				Address: net.LocalHostIP,
-				Option:  RequestOptionOneTimeAuth,
 				Port:    1234,
 				User: &protocol.MemoryUser{
 					Email: "love@v2ray.com",
@@ -78,7 +76,6 @@ func TestTCPRequest(t *testing.T) {
 				Version: Version,
 				Command: protocol.RequestCommandTCP,
 				Address: net.LocalHostIPv6,
-				Option:  RequestOptionOneTimeAuth,
 				Port:    1234,
 				User: &protocol.MemoryUser{
 					Email: "love@v2ray.com",
@@ -95,7 +92,6 @@ func TestTCPRequest(t *testing.T) {
 				Version: Version,
 				Command: protocol.RequestCommandTCP,
 				Address: net.DomainAddress("v2ray.com"),
-				Option:  RequestOptionOneTimeAuth,
 				Port:    1234,
 				User: &protocol.MemoryUser{
 					Email: "love@v2ray.com",
@@ -117,19 +113,21 @@ func TestTCPRequest(t *testing.T) {
 		defer cache.Release()
 
 		writer, err := WriteTCPRequest(request, cache)
-		assert(err, IsNil)
+		common.Must(err)
 
-		assert(writer.WriteMultiBuffer(buf.NewMultiBufferValue(data)), IsNil)
+		common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{data}))
 
 		decodedRequest, reader, err := ReadTCPSession(request.User, cache)
-		assert(err, IsNil)
-		assert(decodedRequest.Address, Equals, request.Address)
-		assert(decodedRequest.Port, Equals, request.Port)
-		assert(decodedRequest.Command, Equals, request.Command)
+		common.Must(err)
+		if r := cmp.Diff(decodedRequest, request); r != "" {
+			t.Error("request: ", r)
+		}
 
 		decodedData, err := reader.ReadMultiBuffer()
-		assert(err, IsNil)
-		assert(decodedData[0].String(), Equals, string(payload))
+		common.Must(err)
+		if r := cmp.Diff(decodedData[0].Bytes(), payload); r != "" {
+			t.Error("data: ", r)
+		}
 	}
 
 	for _, test := range cases {
@@ -139,8 +137,6 @@ func TestTCPRequest(t *testing.T) {
 }
 
 func TestUDPReaderWriter(t *testing.T) {
-	assert := With(t)
-
 	user := &protocol.MemoryUser{
 		Account: toAccount(&Account{
 			Password:   "test-password",
@@ -157,7 +153,6 @@ func TestUDPReaderWriter(t *testing.T) {
 			Address: net.DomainAddress("v2ray.com"),
 			Port:    123,
 			User:    user,
-			Option:  RequestOptionOneTimeAuth,
 		},
 	}}
 
@@ -168,23 +163,25 @@ func TestUDPReaderWriter(t *testing.T) {
 
 	{
 		b := buf.New()
-		b.AppendSupplier(serial.WriteString("test payload"))
-		err := writer.WriteMultiBuffer(buf.NewMultiBufferValue(b))
-		assert(err, IsNil)
+		common.Must2(b.WriteString("test payload"))
+		common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{b}))
 
 		payload, err := reader.ReadMultiBuffer()
-		assert(err, IsNil)
-		assert(payload[0].String(), Equals, "test payload")
+		common.Must(err)
+		if payload[0].String() != "test payload" {
+			t.Error("unexpected output: ", payload[0].String())
+		}
 	}
 
 	{
 		b := buf.New()
-		b.AppendSupplier(serial.WriteString("test payload 2"))
-		err := writer.WriteMultiBuffer(buf.NewMultiBufferValue(b))
-		assert(err, IsNil)
+		common.Must2(b.WriteString("test payload 2"))
+		common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{b}))
 
 		payload, err := reader.ReadMultiBuffer()
-		assert(err, IsNil)
-		assert(payload[0].String(), Equals, "test payload 2")
+		common.Must(err)
+		if payload[0].String() != "test payload 2" {
+			t.Error("unexpected output: ", payload[0].String())
+		}
 	}
 }

@@ -1,3 +1,5 @@
+// +build !confonly
+
 package http
 
 import (
@@ -18,12 +20,12 @@ import (
 
 var (
 	globalDialerMap    map[net.Destination]*http.Client
-	globalDailerAccess sync.Mutex
+	globalDialerAccess sync.Mutex
 )
 
-func getHTTPClient(ctx context.Context, dest net.Destination) (*http.Client, error) {
-	globalDailerAccess.Lock()
-	defer globalDailerAccess.Unlock()
+func getHTTPClient(ctx context.Context, dest net.Destination, tlsSettings *tls.Config) (*http.Client, error) {
+	globalDialerAccess.Lock()
+	defer globalDialerAccess.Unlock()
 
 	if globalDialerMap == nil {
 		globalDialerMap = make(map[net.Destination]*http.Client)
@@ -31,11 +33,6 @@ func getHTTPClient(ctx context.Context, dest net.Destination) (*http.Client, err
 
 	if client, found := globalDialerMap[dest]; found {
 		return client, nil
-	}
-
-	config := tls.ConfigFromContext(ctx)
-	if config == nil {
-		return nil, newError("TLS must be enabled for http transport.").AtWarning()
 	}
 
 	transport := &http2.Transport{
@@ -53,13 +50,30 @@ func getHTTPClient(ctx context.Context, dest net.Destination) (*http.Client, err
 			}
 			address := net.ParseAddress(rawHost)
 
-			pconn, err := internet.DialSystem(context.Background(), net.TCPDestination(address, port))
+			pconn, err := internet.DialSystem(context.Background(), net.TCPDestination(address, port), nil)
 			if err != nil {
 				return nil, err
 			}
-			return gotls.Client(pconn, tlsConfig), nil
+
+			cn := gotls.Client(pconn, tlsConfig)
+			if err := cn.Handshake(); err != nil {
+				return nil, err
+			}
+			if !tlsConfig.InsecureSkipVerify {
+				if err := cn.VerifyHostname(tlsConfig.ServerName); err != nil {
+					return nil, err
+				}
+			}
+			state := cn.ConnectionState()
+			if p := state.NegotiatedProtocol; p != http2.NextProtoTLS {
+				return nil, newError("http2: unexpected ALPN protocol " + p + "; want q" + http2.NextProtoTLS).AtError()
+			}
+			if !state.NegotiatedProtocolIsMutual {
+				return nil, newError("http2: could not negotiate protocol mutually").AtError()
+			}
+			return cn, nil
 		},
-		TLSClientConfig: config.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("h2")),
+		TLSClientConfig: tlsSettings.GetTLSConfig(tls.WithDestination(dest)),
 	}
 
 	client := &http.Client{
@@ -71,14 +85,13 @@ func getHTTPClient(ctx context.Context, dest net.Destination) (*http.Client, err
 }
 
 // Dial dials a new TCP connection to the given destination.
-func Dial(ctx context.Context, dest net.Destination) (internet.Connection, error) {
-	rawSettings := internet.StreamSettingsFromContext(ctx)
-	httpSettings, ok := rawSettings.ProtocolSettings.(*Config)
-	if !ok {
-		return nil, newError("HTTP config is not set.").AtError()
+func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (internet.Connection, error) {
+	httpSettings := streamSettings.ProtocolSettings.(*Config)
+	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
+	if tlsConfig == nil {
+		return nil, newError("TLS must be enabled for http transport.").AtWarning()
 	}
-
-	client, err := getHTTPClient(ctx, dest)
+	client, err := getHTTPClient(ctx, dest, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +129,7 @@ func Dial(ctx context.Context, dest net.Destination) (internet.Connection, error
 	return net.NewConnection(
 		net.ConnectionOutput(response.Body),
 		net.ConnectionInput(bwriter),
-		net.ConnectionOnClose(common.NewChainedClosable(breader, bwriter, response.Body)),
+		net.ConnectionOnClose(common.ChainedClosable{breader, bwriter, response.Body}),
 	), nil
 }
 

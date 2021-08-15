@@ -7,6 +7,7 @@ import (
 
 	"v2ray.com/core/common/errors"
 	"v2ray.com/core/common/net"
+	"v2ray.com/core/common/protocol"
 )
 
 // ID of a session.
@@ -23,6 +24,8 @@ func NewID() ID {
 	}
 }
 
+// ExportIDToError transfers session.ID into an error object, for logging purpose.
+// This can be used with error.WriteToLog().
 func ExportIDToError(ctx context.Context) errors.ExportOption {
 	id := IDFromContext(ctx)
 	return func(h *errors.ExportOptionHolder) {
@@ -30,14 +33,62 @@ func ExportIDToError(ctx context.Context) errors.ExportOption {
 	}
 }
 
+// Inbound is the metadata of an inbound connection.
 type Inbound struct {
-	Source  net.Destination
+	// Source address of the inbound connection.
+	Source net.Destination
+	// Getaway address
 	Gateway net.Destination
-	Tag     string
+	// Tag of the inbound proxy that handles the connection.
+	Tag string
+	// User is the user that authencates for the inbound. May be nil if the protocol allows anounymous traffic.
+	User *protocol.MemoryUser
 }
 
+// Outbound is the metadata of an outbound connection.
 type Outbound struct {
-	Target      net.Destination
-	Gateway     net.Address
-	ResolvedIPs []net.IP
+	// Target address of the outbound connection.
+	Target net.Destination
+	// Gateway address
+	Gateway net.Address
+}
+
+// SniffingRequest controls the behavior of content sniffing.
+type SniffingRequest struct {
+	OverrideDestinationForProtocol []string
+	Enabled                        bool
+}
+
+// Content is the metadata of the connection content.
+type Content struct {
+	// Protocol of current content.
+	Protocol string
+
+	SniffingRequest SniffingRequest
+
+	Attributes map[string]string
+
+	SkipRoutePick bool
+}
+
+// Sockopt is the settings for socket connection.
+type Sockopt struct {
+	// Mark of the socket connection.
+	Mark int32
+}
+
+// SetAttribute attachs additional string attributes to content.
+func (c *Content) SetAttribute(name string, value string) {
+	if c.Attributes == nil {
+		c.Attributes = make(map[string]string)
+	}
+	c.Attributes[name] = value
+}
+
+// Attribute retrieves additional string attributes from content.
+func (c *Content) Attribute(name string) string {
+	if c.Attributes == nil {
+		return ""
+	}
+	return c.Attributes[name]
 }

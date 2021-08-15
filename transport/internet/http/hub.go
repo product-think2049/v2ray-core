@@ -1,3 +1,5 @@
+// +build !confonly
+
 package http
 
 import (
@@ -5,9 +7,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"v2ray.com/core/common"
 	"v2ray.com/core/common/net"
+	http_proto "v2ray.com/core/common/protocol/http"
 	"v2ray.com/core/common/serial"
 	"v2ray.com/core/common/session"
 	"v2ray.com/core/common/signal/done"
@@ -19,7 +26,7 @@ type Listener struct {
 	server  *http.Server
 	handler internet.ConnHandler
 	local   net.Addr
-	config  Config
+	config  *Config
 }
 
 func (l *Listener) Addr() net.Addr {
@@ -76,11 +83,16 @@ func (l *Listener) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 		}
 	}
 
+	forwardedAddrs := http_proto.ParseXForwardedFor(request.Header)
+	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+		remoteAddr.(*net.TCPAddr).IP = forwardedAddrs[0].IP()
+	}
+
 	done := done.New()
 	conn := net.NewConnection(
 		net.ConnectionOutput(request.Body),
 		net.ConnectionInput(flushWriter{w: writer, d: done}),
-		net.ConnectionOnClose(common.NewChainedClosable(done, request.Body)),
+		net.ConnectionOnClose(common.ChainedClosable{done, request.Body}),
 		net.ConnectionLocalAddr(l.Addr()),
 		net.ConnectionRemoteAddr(remoteAddr),
 	)
@@ -88,31 +100,34 @@ func (l *Listener) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 	<-done.Wait()
 }
 
-func Listen(ctx context.Context, address net.Address, port net.Port, handler internet.ConnHandler) (internet.Listener, error) {
-	rawSettings := internet.StreamSettingsFromContext(ctx)
-	httpSettings, ok := rawSettings.ProtocolSettings.(*Config)
-	if !ok {
-		return nil, newError("HTTP config is not set.").AtError()
-	}
-
+func Listen(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, handler internet.ConnHandler) (internet.Listener, error) {
+	httpSettings := streamSettings.ProtocolSettings.(*Config)
 	listener := &Listener{
 		handler: handler,
 		local: &net.TCPAddr{
 			IP:   address.IP(),
 			Port: int(port),
 		},
-		config: *httpSettings,
+		config: httpSettings,
 	}
 
-	config := tls.ConfigFromContext(ctx)
+	var server *http.Server
+	config := tls.ConfigFromStreamSettings(streamSettings)
 	if config == nil {
-		return nil, newError("TLS must be enabled for http transport.").AtWarning()
-	}
+		h2s := &http2.Server{}
 
-	server := &http.Server{
-		Addr:      serial.Concat(address, ":", port),
-		TLSConfig: config.GetTLSConfig(tls.WithNextProto("h2")),
-		Handler:   listener,
+		server = &http.Server{
+			Addr:              serial.Concat(address, ":", port),
+			Handler:           h2c.NewHandler(listener, h2s),
+			ReadHeaderTimeout: time.Second * 4,
+		}
+	} else {
+		server = &http.Server{
+			Addr:              serial.Concat(address, ":", port),
+			TLSConfig:         config.GetTLSConfig(tls.WithNextProto("h2")),
+			Handler:           listener,
+			ReadHeaderTimeout: time.Second * 4,
+		}
 	}
 
 	listener.server = server
@@ -120,15 +135,21 @@ func Listen(ctx context.Context, address net.Address, port net.Port, handler int
 		tcpListener, err := internet.ListenSystem(ctx, &net.TCPAddr{
 			IP:   address.IP(),
 			Port: int(port),
-		})
+		}, streamSettings.SocketSettings)
 		if err != nil {
 			newError("failed to listen on", address, ":", port).Base(err).WriteToLog(session.ExportIDToError(ctx))
 			return
 		}
-
-		err = server.ServeTLS(tcpListener, "", "")
-		if err != nil {
-			newError("stoping serving TLS").Base(err).WriteToLog(session.ExportIDToError(ctx))
+		if config == nil {
+			err = server.Serve(tcpListener)
+			if err != nil {
+				newError("stoping serving H2C").Base(err).WriteToLog(session.ExportIDToError(ctx))
+			}
+		} else {
+			err = server.ServeTLS(tcpListener, "", "")
+			if err != nil {
+				newError("stoping serving TLS").Base(err).WriteToLog(session.ExportIDToError(ctx))
+			}
 		}
 	}()
 

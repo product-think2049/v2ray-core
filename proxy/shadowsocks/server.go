@@ -1,3 +1,5 @@
+// +build !confonly
+
 package shadowsocks
 
 import (
@@ -10,18 +12,20 @@ import (
 	"v2ray.com/core/common/log"
 	"v2ray.com/core/common/net"
 	"v2ray.com/core/common/protocol"
+	udp_proto "v2ray.com/core/common/protocol/udp"
 	"v2ray.com/core/common/session"
 	"v2ray.com/core/common/signal"
 	"v2ray.com/core/common/task"
+	"v2ray.com/core/features/policy"
+	"v2ray.com/core/features/routing"
 	"v2ray.com/core/transport/internet"
 	"v2ray.com/core/transport/internet/udp"
-	"v2ray.com/core/transport/pipe"
 )
 
 type Server struct {
-	config ServerConfig
-	user   *protocol.MemoryUser
-	v      *core.Instance
+	config        *ServerConfig
+	user          *protocol.MemoryUser
+	policyManager policy.Manager
 }
 
 // NewServer create a new Shadowsocks server.
@@ -35,29 +39,28 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		return nil, newError("failed to parse user account").Base(err)
 	}
 
+	v := core.MustFromContext(ctx)
 	s := &Server{
-		config: *config,
-		user:   mUser,
-		v:      core.MustFromContext(ctx),
+		config:        config,
+		user:          mUser,
+		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 	}
 
 	return s, nil
 }
 
-func (s *Server) Network() net.NetworkList {
-	list := net.NetworkList{
-		Network: s.config.Network,
-	}
-	if len(list.Network) == 0 {
-		list.Network = append(list.Network, net.Network_TCP)
+func (s *Server) Network() []net.Network {
+	list := s.config.Network
+	if len(list) == 0 {
+		list = append(list, net.Network_TCP)
 	}
 	if s.config.UdpEnabled {
-		list.Network = append(list.Network, net.Network_UDP)
+		list = append(list, net.Network_UDP)
 	}
 	return list
 }
 
-func (s *Server) Process(ctx context.Context, network net.Network, conn internet.Connection, dispatcher core.Dispatcher) error {
+func (s *Server) Process(ctx context.Context, network net.Network, conn internet.Connection, dispatcher routing.Dispatcher) error {
 	switch network {
 	case net.Network_TCP:
 		return s.handleConnection(ctx, conn, dispatcher)
@@ -68,13 +71,14 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn internet
 	}
 }
 
-func (s *Server) handlerUDPPayload(ctx context.Context, conn internet.Connection, dispatcher core.Dispatcher) error {
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, payload *buf.Buffer) {
+func (s *Server) handlerUDPPayload(ctx context.Context, conn internet.Connection, dispatcher routing.Dispatcher) error {
+	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		if request == nil {
 			return
 		}
 
+		payload := packet.Payload
 		data, err := EncodeUDPPacket(request, payload.Bytes())
 		payload.Release()
 		if err != nil {
@@ -86,9 +90,13 @@ func (s *Server) handlerUDPPayload(ctx context.Context, conn internet.Connection
 		conn.Write(data.Bytes())
 	})
 
-	account := s.user.Account.(*MemoryAccount)
+	inbound := session.InboundFromContext(ctx)
+	if inbound == nil {
+		panic("no inbound metadata")
+	}
+	inbound.User = s.user
 
-	reader := buf.NewReader(conn)
+	reader := buf.NewPacketReader(conn)
 	for {
 		mpayload, err := reader.ReadMultiBuffer()
 		if err != nil {
@@ -111,40 +119,29 @@ func (s *Server) handlerUDPPayload(ctx context.Context, conn internet.Connection
 				continue
 			}
 
-			if request.Option.Has(RequestOptionOneTimeAuth) && account.OneTimeAuth == Account_Disabled {
-				newError("client payload enables OTA but server doesn't allow it").WriteToLog(session.ExportIDToError(ctx))
-				payload.Release()
-				continue
-			}
-
-			if !request.Option.Has(RequestOptionOneTimeAuth) && account.OneTimeAuth == Account_Enabled {
-				newError("client payload disables OTA but server forces it").WriteToLog(session.ExportIDToError(ctx))
-				payload.Release()
-				continue
-			}
-
+			currentPacketCtx := ctx
 			dest := request.Destination()
-			if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.Source.IsValid() {
-				log.Record(&log.AccessMessage{
+			if inbound.Source.IsValid() {
+				currentPacketCtx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 					From:   inbound.Source,
 					To:     dest,
 					Status: log.AccessAccepted,
 					Reason: "",
+					Email:  request.User.Email,
 				})
 			}
-			newError("tunnelling request to ", dest).WriteToLog(session.ExportIDToError(ctx))
+			newError("tunnelling request to ", dest).WriteToLog(session.ExportIDToError(currentPacketCtx))
 
-			ctx = protocol.ContextWithUser(ctx, request.User)
-			ctx = protocol.ContextWithRequestHeader(ctx, request)
-			udpServer.Dispatch(ctx, dest, data)
+			currentPacketCtx = protocol.ContextWithRequestHeader(currentPacketCtx, request)
+			udpServer.Dispatch(currentPacketCtx, dest, data)
 		}
 	}
 
 	return nil
 }
 
-func (s *Server) handleConnection(ctx context.Context, conn internet.Connection, dispatcher core.Dispatcher) error {
-	sessionPolicy := s.v.PolicyManager().ForLevel(s.user.Level)
+func (s *Server) handleConnection(ctx context.Context, conn internet.Connection, dispatcher routing.Dispatcher) error {
+	sessionPolicy := s.policyManager.ForLevel(s.user.Level)
 	conn.SetReadDeadline(time.Now().Add(sessionPolicy.Timeouts.Handshake))
 
 	bufferedReader := buf.BufferedReader{Reader: buf.NewReader(conn)}
@@ -160,21 +157,26 @@ func (s *Server) handleConnection(ctx context.Context, conn internet.Connection,
 	}
 	conn.SetReadDeadline(time.Time{})
 
+	inbound := session.InboundFromContext(ctx)
+	if inbound == nil {
+		panic("no inbound metadata")
+	}
+	inbound.User = s.user
+
 	dest := request.Destination()
-	log.Record(&log.AccessMessage{
+	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 		From:   conn.RemoteAddr(),
 		To:     dest,
 		Status: log.AccessAccepted,
 		Reason: "",
+		Email:  request.User.Email,
 	})
 	newError("tunnelling request to ", dest).WriteToLog(session.ExportIDToError(ctx))
-
-	ctx = protocol.ContextWithUser(ctx, request.User)
 
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
 
-	ctx = core.ContextWithBufferPolicy(ctx, sessionPolicy.Buffer)
+	ctx = policy.ContextWithBufferPolicy(ctx, sessionPolicy.Buffer)
 	link, err := dispatcher.Dispatch(ctx, dest)
 	if err != nil {
 		return err
@@ -220,10 +222,10 @@ func (s *Server) handleConnection(ctx context.Context, conn internet.Connection,
 		return nil
 	}
 
-	var requestDoneAndCloseWriter = task.Single(requestDone, task.OnSuccess(task.Close(link.Writer)))
-	if err := task.Run(task.WithContext(ctx), task.Parallel(requestDoneAndCloseWriter, responseDone))(); err != nil {
-		pipe.CloseError(link.Reader)
-		pipe.CloseError(link.Writer)
+	var requestDoneAndCloseWriter = task.OnSuccess(requestDone, task.Close(link.Writer))
+	if err := task.Run(ctx, requestDoneAndCloseWriter, responseDone); err != nil {
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
 		return newError("connection ends").Base(err)
 	}
 

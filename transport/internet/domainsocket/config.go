@@ -1,3 +1,5 @@
+// +build !confonly
+
 package domainsocket
 
 import (
@@ -7,14 +9,23 @@ import (
 )
 
 const protocolName = "domainsocket"
+const sizeofSunPath = 108
 
 func (c *Config) GetUnixAddr() (*net.UnixAddr, error) {
 	path := c.Path
-	if len(path) == 0 {
+	if path == "" {
 		return nil, newError("empty domain socket path")
 	}
-	if c.Abstract && path[0] != '\x00' {
-		path = "\x00" + path
+	if c.Abstract && path[0] != '@' {
+		path = "@" + path
+	}
+	if c.Abstract && c.Padding {
+		raw := []byte(path)
+		addr := make([]byte, sizeofSunPath)
+		for i, c := range raw {
+			addr[i] = c
+		}
+		path = string(addr)
 	}
 	return &net.UnixAddr{
 		Name: path,
@@ -23,7 +34,7 @@ func (c *Config) GetUnixAddr() (*net.UnixAddr, error) {
 }
 
 func init() {
-	common.Must(internet.RegisterProtocolConfigCreatorByName(protocolName, func() interface{} {
+	common.Must(internet.RegisterProtocolConfigCreator(protocolName, func() interface{} {
 		return new(Config)
 	}))
 }
